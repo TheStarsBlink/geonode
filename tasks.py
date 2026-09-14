@@ -215,6 +215,16 @@ def updateadmin(ctx):
 
 
 @task
+def create_mcp_service_user(ctx):
+    print("***********************create MCP service user**************************")
+    ctx.run(
+        f"source $HOME/.override_env && "
+        f"python manage.py create_mcp_service_user --settings={_localsettings()}",
+        pty=True,
+    )
+
+
+@task
 def initialized(ctx):
     print("**************************init file********************************")
     static_root = os.environ.get("STATIC_ROOT", "/mnt/volumes/statics/static/")

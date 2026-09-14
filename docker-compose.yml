@@ -40,6 +40,50 @@ services:
     entrypoint: ["/usr/src/geonode/entrypoint.sh"]
     command: "uwsgi --ini /usr/src/geonode/uwsgi.ini"
 
+  # MCP server for accessing this GeoNode instance.
+  geonode-mcp:
+    image: 04202414/geonode-mcp:latest
+    container_name: geonode-mcp4${COMPOSE_PROJECT_NAME}
+    restart: unless-stopped
+    environment:
+      GEONODE_BASE_URL: http://django:8000
+      GEONODE_USERNAME: ${MCP_SERVICE_USERNAME:-mcp_service}
+      GEONODE_PASSWORD: ${MCP_SERVICE_PASSWORD:?MCP_SERVICE_PASSWORD must be set}
+      GEONODE_VERIFY_SSL: "true"
+      MCP_AUTH_ENABLED: ${MCP_AUTH_ENABLED:-false}
+      MCP_RESOURCE_SERVER_URL: ${MCP_RESOURCE_SERVER_URL:-}
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
+    ports:
+      - "${MCP_BIND_ADDRESS:-127.0.0.1}:${MCP_HTTP_PORT:-8001}:8000"
+    depends_on:
+      django:
+        condition: service_healthy
+
+  # MCP server for GeoServer catalog and service operations.
+  geoserver-mcp:
+    image: 04202414/geoserver-mcp:latest
+    container_name: geoserver-mcp4${COMPOSE_PROJECT_NAME}
+    restart: unless-stopped
+    environment:
+      GEOSERVER_URL: http://geoserver:8080/geoserver
+      GEOSERVER_USER: ${GEOSERVER_MCP_USER:-${GEOSERVER_ADMIN_USER:-admin}}
+      GEOSERVER_PASSWORD: ${GEOSERVER_MCP_PASSWORD:-${GEOSERVER_ADMIN_PASSWORD:-geoserver}}
+      GEONODE_BASE_URL: http://django:8000
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
+      MCP_AUTH_ENABLED: "true"
+      MCP_RESOURCE_SERVER_URL: ${GEOSERVER_MCP_RESOURCE_SERVER_URL:-}
+    ports:
+      - "${GEOSERVER_MCP_BIND_ADDRESS:-0.0.0.0}:${GEOSERVER_MCP_HTTP_PORT:-8004}:8000"
+    depends_on:
+      django:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
+
   # Celery worker that executes celery tasks created by Django.
   celery:
     << : *default-common-django
@@ -104,7 +148,7 @@ services:
     env_file:
       - ${COMPOSE_ENV_FILES:-.env}
     ports:
-      - "8080:8080"
+      - "8081:8080"
     volumes:
       - statics:/mnt/volumes/statics
       - geoserver-data-dir:/geoserver_data/data

@@ -45,6 +45,8 @@ else
         invoke updateadmin
     fi
 
+    invoke create-mcp-service-user
+
     invoke statics
     invoke loadthesauri
 

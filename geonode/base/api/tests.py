@@ -871,6 +871,44 @@ class BaseApiTests(APITestCase):
         # Pagination
         self.assertEqual(len(response.data["resources"]), 1)
 
+    def test_search_fields_allow_list(self):
+        """
+        search_fields not allowed by the view are ignored.
+        """
+        term = "no-such-value-b3wf"
+
+        def _check(url, allowed, rejected):
+            total = self.client.get(url, format="json").data["total"]
+            self.assertGreater(total, 0)
+            for field in allowed:
+                response = self.client.get(f"{url}?search={term}&search_fields={field}", format="json")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["total"], 0, field)
+            for field in rejected:
+                response = self.client.get(f"{url}?search={term}&search_fields={field}", format="json")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["total"], total, field)
+
+        resource_rejected = ["owner__password__startswith", "owner__email__regex", "owner__username", "uuid", "^title"]
+        # anonymous
+        for name in ("base-resources-list", "datasets-list", "maps-list", "documents-list"):
+            _check(reverse(name), allowed=["title", "abstract"], rejected=resource_rejected)
+
+        admin = get_user_model().objects.get(username="admin")
+        GeoApp.objects.create(title="search fields geoapp", owner=admin)
+        self.assertTrue(self.client.login(username="admin", password="admin"))
+        _check(reverse("geoapps-list"), allowed=["title", "abstract"], rejected=resource_rejected)
+        _check(
+            reverse("users-list"),
+            allowed=["username", "first_name", "last_name"],
+            rejected=["password__startswith", "email", "username__regex"],
+        )
+        _check(
+            reverse("group-profiles-list"),
+            allowed=["title", "slug"],
+            rejected=["group__user__password__startswith", "description"],
+        )
+
     def test_filter_resources(self):
         """
         Ensure we can filter across the Resource Base list.
@@ -1380,6 +1418,50 @@ class BaseApiTests(APITestCase):
         user_permissions = {u["username"]: u["permissions"] for u in response.data.get("users", [])}
         self.assertNotIn("bobby", user_permissions)
         self.assertEqual(user_permissions.get("norman"), "edit")
+
+    def test_resource_service_update_with_list_params(self):
+        self.assertTrue(self.client.login(username="admin", password="admin"))
+        admin = get_user_model().objects.get(username="admin")
+        resource = dataset_manager.create(
+            str(uuid4()), resource_type=Dataset, defaults={"title": "api_update_list_params", "owner": admin}
+        )
+
+        # regions is left to the view's "[]" default, keywords is sent as in the endpoint docs
+        response = self.client.put(
+            f"/api/v2/resources/{resource.pk}/update/",
+            data={"vals": '{"title": "api_update_list_params_updated"}', "keywords": '["k1", "k2"]'},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        resp_js = response.json()
+        resouce_service_dispatcher.apply((resp_js.get("execution_id"),))
+        response = self.client.get(resp_js.get("status_url"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json().get("status"), "finished", response.json())
+
+        resource.refresh_from_db()
+        self.assertEqual(resource.title, "api_update_list_params_updated")
+
+    def test_resource_service_update_failure_is_recorded(self):
+        self.assertTrue(self.client.login(username="admin", password="admin"))
+        admin = get_user_model().objects.get(username="admin")
+        resource = dataset_manager.create(
+            str(uuid4()), resource_type=Dataset, defaults={"title": "api_update_failure", "owner": admin}
+        )
+
+        response = self.client.put(
+            f"/api/v2/resources/{resource.pk}/update/",
+            data={"vals": '{"owner": "no-such-user"}'},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        resp_js = response.json()
+        resouce_service_dispatcher.apply((resp_js.get("execution_id"),))
+
+        execution_request = ExecutionRequest.objects.get(exec_id=resp_js.get("execution_id"))
+        self.assertEqual(execution_request.status, ExecutionRequest.STATUS_FAILED)
+        self.assertIn("update", execution_request.output_params["error"])
+        self.assertIn("does not exist", execution_request.output_params["exception"])
 
     def test_featured_and_published_resources(self):
         """
@@ -3008,7 +3090,7 @@ class BaseApiTests(APITestCase):
 
     @patch.dict(os.environ, {"ASYNC_SIGNALS": "False"})
     @override_settings(ASYNC_SIGNALS=False)
-    def test_resource_service_copy_with_perms_dataset_set_default_perms(self):
+    def test_resource_service_copy_with_perms_dataset_keep_original_perms(self):
         with self.settings(ASYNC_SIGNALS=False):
             files = os.path.join(gisdata.GOOD_DATA, "vector/single_point.shp")
             files_as_dict, _ = get_files(files)
@@ -3049,7 +3131,7 @@ class BaseApiTests(APITestCase):
         self.assertEqual("finished", self.client.get(response.json().get("status_url")).json().get("status"))
         _resource = Dataset.objects.filter(title__icontains="test_copy_with_perms").last()
         self.assertIsNotNone(_resource)
-        self.assertNotIn(
+        self.assertIn(
             "bobby",
             [x.username for x in permissions_registry.get_perms(instance=_resource).get("users", [])],
         )
@@ -3079,6 +3161,23 @@ class BaseApiTests(APITestCase):
         resource = create_single_map(name="test_copy")
 
         self._assertCloningWithPerms(resource)
+
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    def test_resource_service_copy_map_with_json_payload(self):
+        resource = create_single_map(name="test_copy_json_payload")
+        try:
+            self.assertTrue(self.client.login(username="admin", password="admin"))
+            copy_url = reverse("importer_resource_copy", kwargs={"pk": resource.pk})
+            response = self.client.put(
+                copy_url,
+                data={"defaults": {"title": "cloned via json body"}},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            cloned = Map.objects.exclude(pk=resource.pk).latest("id")
+            self.assertEqual(cloned.title, "cloned via json body")
+        finally:
+            resource.delete()
 
     def _assertCloningWithPerms(self, resource):
         # login as bobby
@@ -3454,6 +3553,24 @@ class TestApiLinkedResources(GeoNodeBaseTestSupport):
         self.assertEqual(self.doc.id, link_connected.source_id)
 
         self.assertEqual(self.map.id, link_connected.target_id)
+
+    def test_linked_resource_requires_target_view_permission(self):
+        user = get_user_model().objects.create_user(username="linked_resource_user", password="test")
+        url = reverse("base-resources-linked_resources", args=[self.doc.id])
+
+        LinkedResource.objects.filter(source=self.doc, target=self.map).delete()
+
+        self.doc.set_permissions(
+            {"users": {user.username: ["base.view_resourcebase", "base.change_resourcebase"]}, "groups": {}}
+        )
+        self.map.set_permissions({"users": {}, "groups": {}})
+
+        self.client.force_login(user)
+        response = self.client.post(url, data={"target": [self.map.id]}, content_type="application/json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.map.id, response.json()["error"])
+        self.assertFalse(LinkedResource.objects.filter(source=self.doc, target=self.map).exists())
 
     def test_insert_linked_resource_invalid_type(self):
         url = reverse("base-resources-linked_resources", args=[self.doc.id])

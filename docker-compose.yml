@@ -150,6 +150,10 @@ services:
     ports:
       - "8081:8080"
     volumes:
+      # MBStyle extension; keep these versions aligned with the GeoServer image.
+      - ./docker/geoserver/plugins/mbstyle-2.28.5/gs-mbstyle-2.28.5.jar:/usr/local/tomcat/webapps/geoserver/WEB-INF/lib/gs-mbstyle-2.28.5.jar:ro
+      - ./docker/geoserver/plugins/mbstyle-2.28.5/gt-mbstyle-34.5.jar:/usr/local/tomcat/webapps/geoserver/WEB-INF/lib/gt-mbstyle-34.5.jar:ro
+      - ./docker/geoserver/plugins/mbstyle-2.28.5/json-simple-1.1.1.jar:/usr/local/tomcat/webapps/geoserver/WEB-INF/lib/json-simple-1.1.1.jar:ro
       - statics:/mnt/volumes/statics
       - geoserver-data-dir:/geoserver_data/data
       - backup-restore:/backup_restore
@@ -165,6 +169,7 @@ services:
   db:
     # use geonode official postgis 15 image
     image: geonode/postgis:15-3.5-latest
+    shm_size: "1gb"
     entrypoint: ["/usr/local/bin/geonode-postgres-entrypoint.sh"]
     command:
       - postgres

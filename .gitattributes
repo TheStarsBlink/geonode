@@ -1,0 +1,4 @@
+
+# Linux container entrypoints must not acquire Windows CRLF.
+*.sh text eol=lf
+celery-cmd text eol=lf
